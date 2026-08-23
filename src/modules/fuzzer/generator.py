@@ -66,7 +66,7 @@ Rules:
                 response_mime_type="application/json",
                 response_schema=GEMINI_SCHEMA,
                 temperature=0.2,  # Low temperature prevents hallucination & token looping
-                max_output_tokens=1000,
+                max_output_tokens=4096,
             ),
         )
 

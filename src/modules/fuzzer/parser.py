@@ -21,6 +21,9 @@ def extract_endpoints(openapi_spec: dict, allowed_methods: list[str]):
         for method, details in methods.items():
             if method.lower() not in ['get','post','put', 'delete', 'patch']:
                 continue
+
+            if method.lower() not in allowed_methods:
+                continue
             endpoint_info = {
                 "path":path,
                 "method":method.upper(),

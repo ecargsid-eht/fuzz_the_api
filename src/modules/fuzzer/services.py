@@ -1,4 +1,5 @@
 import httpx
+import json
 from fastapi import HTTPException
 from urllib.parse import urlparse, urlunparse
 from src.core.database import AsyncSession
@@ -6,6 +7,7 @@ from .schemas import ScanRequest
 from arq.connections import ArqRedis
 from .models import FuzzJob, FuzzResult, JobStatus
 from sqlalchemy import select
+
 
 
 def normalize_url(url: str):
@@ -97,5 +99,58 @@ async def scanStatus(db: AsyncSession, job_id: int):
     vuln_result = await db.execute(select(FuzzResult).where(FuzzResult.job_id == job_id))
     vulnerabilities = vuln_result.scalars().all()
     return job, vulnerabilities
+
+
+async def generate_report(db: AsyncSession, job_id: int):
+    """
+    Fetches the scan job and vulnerabilities, and builds a Markdown security report.
+    Returns None if the job is not found.
+    """
+    # 1. Fetch the Job
+    job_result = await db.execute(select(FuzzJob).where(FuzzJob.id == job_id))
+    job = job_result.scalar_one_or_none()
+    
+    if not job:
+        return None
+
+    # 2. Fetch the Vulnerabilities
+    vuln_result = await db.execute(select(FuzzResult).where(FuzzResult.job_id == job_id))
+    vulnerabilities = vuln_result.scalars().all()
+
+    # 3. Build the Markdown Content
+    md_lines = [
+        "# 🛡️ Automated API Security Audit Report",
+        f"**Target API:** `{job.openapi_url}`\n",
+        f"**Scan Status:** `{job.status}`\n",
+        f"**Total Vulnerabilities Found:** `{len(vulnerabilities)}`\n",
+        "---\n",
+        "## 🚨 Executive Summary",
+    ]
+
+    if not vulnerabilities:
+        md_lines.append("No critical vulnerabilities (Unhandled 500s or 200/201 Bypasses) were detected during this scan. The API successfully handled all malicious payloads gracefully.")
+    else:
+        md_lines.append("The following critical vulnerabilities were identified during the automated fuzzing process. Immediate remediation is recommended.\n")
+        md_lines.append("---\n## 📋 Detailed Findings\n")
+
+        for idx, vuln in enumerate(vulnerabilities, 1):
+            md_lines.extend([
+                f"### {idx}. {vuln.test_type.upper()} on `{vuln.endpoint_path}`",
+                f"- **HTTP Method:** `{vuln.http_method}`",
+                f"- **Target Response Code:** `{vuln.status_code}`",
+                "",
+                "**Malicious Payload Sent:**",
+                "```json",
+                json.dumps(vuln.payload_sent, indent=2),
+                "```",
+                "",
+                "**Server Response Snippet:**",
+                "```text",
+                vuln.response_body,
+                "```",
+                "---\n"
+            ])
+
+    return "\n".join(md_lines)
 
 

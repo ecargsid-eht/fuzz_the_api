@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     GEMINI_API_KEY:str
     REDIS_URL:str = "redis://localhost:6379"
     DATABASE_URL:str
+    RESEND_API_KEY:str
     # Email related settings to be added later on...
 
     model_config = SettingsConfigDict(env_file='.env.development', env_file_encoding='utf-8', extra='ignore')

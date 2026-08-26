@@ -3,13 +3,15 @@ import json
 import re
 import time
 import httpx
+import os
 from sqlalchemy import select
 
 from src.core.database import AsyncSessionLocal
 from .generator import generate_attack_payloads
 from .models import FuzzJob, FuzzResult, JobStatus
 from .parser import extract_endpoints, resolve_base_url
-
+from .email_service import send_security_report
+from .services import generate_report, generate_pdf_report
 class GeminiRateLimiter:
     """
     Ensures we do not exceed Gemini's Free Tier limits:
@@ -113,14 +115,8 @@ async def run_fuzzer(ctx: dict, job_id: int):
                             test_type = payload.get("test_type", "Unknown")
                             print(f"📡 [{status}] {endpoint['method']} {resolved_path} -> {test_type}")
 
-                            # ==========================================
-                            # UPGRADED VULNERABILITY DETECTION ENGINE
-                            # ==========================================
-                            
-                            # 1. Did the server crash completely?
                             is_crash = status >= 500
 
-                            # 2. Did a malicious payload unexpectedly succeed?
                             test_type_lower = test_type.lower()
                             critical_attacks = ["sql", "bola", "broken access", "privilege", "idor", "bypass", "nosql", "xss"]
                             is_critical_attack = any(attack in test_type_lower for attack in critical_attacks)
@@ -150,11 +146,44 @@ async def run_fuzzer(ctx: dict, job_id: int):
 
             job.status = JobStatus.COMPLETED
             await db.commit()
-            print(f"✅ Job {job.id} completed successfully.")
+            print(f"Job {job.id} completed successfully.")
             return True
 
         except Exception as e:
-            print(f"❌ Job #{job_id} failed with error: {e}")
+            print(f"Job #{job_id} failed with error: {e}")
             job.status = JobStatus.FAILED
             await db.commit()
             return False
+
+
+async def send_email_task(ctx: dict, job_id: int, target_email: str):
+    """
+    ARQ Task: Generates Markdown, converts to PDF, dispatches email, and cleans up.
+    """
+    async with AsyncSessionLocal() as db:
+        job_result = await db.execute(select(FuzzJob).where(FuzzJob.id == job_id))
+        job = job_result.scalar_one_or_none()
+
+        if not job:
+            print(f"Cannot email report: Job {job_id} not found.")
+            return False
+
+        report_content = await generate_report(db, job_id)
+        if not report_content:
+            return False
+
+        temp_pdf_path = await generate_pdf_report(db, job_id)
+
+        try:
+            send_security_report(
+                target_email=target_email,
+                job_id=job.id,
+                target_url=job.openapi_url,
+                report_content=report_content,
+                pdf_path=temp_pdf_path
+            )
+        finally:
+            if temp_pdf_path and os.path.exists(temp_pdf_path):
+                os.remove(temp_pdf_path)
+                
+        return True

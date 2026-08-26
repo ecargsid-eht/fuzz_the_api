@@ -5,10 +5,11 @@ from urllib.parse import urlparse, urlunparse
 from src.core.database import AsyncSession
 from .schemas import ScanRequest
 from arq.connections import ArqRedis
-from .models import FuzzJob, FuzzResult, JobStatus
+from .models import FuzzJob, FuzzResult
 from sqlalchemy import select
-
-
+import tempfile
+import os
+from markdown_pdf import MarkdownPdf, Section
 
 def normalize_url(url: str):
     if not url.startswith(("http://", "https://")):
@@ -106,18 +107,15 @@ async def generate_report(db: AsyncSession, job_id: int):
     Fetches the scan job and vulnerabilities, and builds a Markdown security report.
     Returns None if the job is not found.
     """
-    # 1. Fetch the Job
     job_result = await db.execute(select(FuzzJob).where(FuzzJob.id == job_id))
     job = job_result.scalar_one_or_none()
     
     if not job:
         return None
 
-    # 2. Fetch the Vulnerabilities
     vuln_result = await db.execute(select(FuzzResult).where(FuzzResult.job_id == job_id))
     vulnerabilities = vuln_result.scalars().all()
 
-    # 3. Build the Markdown Content
     md_lines = [
         "# 🛡️ Automated API Security Audit Report",
         f"**Target API:** `{job.openapi_url}`\n",
@@ -154,3 +152,42 @@ async def generate_report(db: AsyncSession, job_id: int):
     return "\n".join(md_lines)
 
 
+async def trigger_email_report(db: AsyncSession, job_id: int, email: str, arq_redis: ArqRedis) -> bool:
+    """Enqueues the email notification task to the dedicated ARQ email queue."""
+    job_result = await db.execute(select(FuzzJob).where(FuzzJob.id == job_id))
+    if not job_result.scalar_one_or_none():
+        return False
+
+    await arq_redis.enqueue_job(
+        "send_email_task",
+        job_id=job_id,
+        target_email=email,
+        _queue_name="arq:email_queue"
+    )
+    return True
+
+async def generate_pdf_report(db: AsyncSession, job_id: int) -> str | None:
+    """
+    Generates a PDF from the Markdown report and saves it to a temporary file.
+    Returns the absolute file path to the temporary PDF, or None if the job doesn't exist.
+    """
+    report_content = await generate_report(db, job_id)
+    
+    if report_content is None:
+        return None
+
+    fd, temp_pdf_path = tempfile.mkstemp(suffix=".pdf")
+    os.close(fd)
+
+    try:
+        pdf = MarkdownPdf(toc_level=2)
+        pdf.add_section(Section(report_content, toc=False)) 
+        
+        pdf.save(temp_pdf_path) 
+        
+        return temp_pdf_path
+
+    except Exception as e:
+        if os.path.exists(temp_pdf_path):
+            os.remove(temp_pdf_path)
+        raise e

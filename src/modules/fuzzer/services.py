@@ -5,50 +5,43 @@ from urllib.parse import urlparse, urlunparse
 from src.core.database import AsyncSession
 from .schemas import ScanRequest
 from arq.connections import ArqRedis
-from .models import FuzzJob, FuzzResult
+from .models import FuzzJob, FuzzResult, JobStatus
 from sqlalchemy import select
 import tempfile
 import os
 from markdown_pdf import MarkdownPdf, Section
+from .network import safe_fetch_url,validate_safe_url
 
-def normalize_url(url: str):
-    if not url.startswith(("http://", "https://")):
-        if "localhost" in url or "127.0.0.1" in url:
-            url = f"http://{url}"
-        else: 
-            url = f"https://{url}"
+def normalize_url(url: str) -> str:
+    url_str = str(url).strip()
+    if not url_str.startswith(("http://", "https://")):
+        url_str = f"https://{url_str}"
 
-    parsed = urlparse(url)
+    parsed = urlparse(url_str)
 
-    if parsed.path.endswith(("/openapi.json", "/swagger.json")):
-        return url
+    if parsed.path.endswith((".json", ".yaml", ".yml")):
+        return url_str
 
     if parsed.path in ["", "/"]:
-        new_path='/openapi.json'
-    else:
-        parts = [p for p in parsed.path.strip("/").split("/") if p]
-        if parts:
-            parts[-1] = "openapi.json"
-            new_path = "/"+"/".join(parts)
-        else:
-            new_path = "/openapi.json"
-
-    return urlunparse((
-        parsed.scheme,
-        parsed.netloc,
-        new_path,
-        parsed.params,
-        parsed.query,
-        parsed.fragment
-    ))
-
+        new_path = '/openapi.json'
+        
+        return urlunparse((
+            parsed.scheme,
+            parsed.netloc,
+            new_path,
+            parsed.params,
+            parsed.query,
+            parsed.fragment
+        ))
+        
+    return url_str
 
 async def scanRequest(db: AsyncSession, req: ScanRequest, redis: ArqRedis):
     payload = req.model_dump(mode='json')
-    target_url = normalize_url(str(payload["openapi_url"]))
-
-    is_local = "localhost" in target_url or "127.0.0.1" in target_url
-    timeout_val = 5.0 if is_local else 45.0
+    target_url = validate_safe_url(normalize_url(str(payload["openapi_url"])))
+    if payload.get("target_base_url"):
+        validate_safe_url(payload["target_base_url"]);
+    
 
     request_headers = {
         "User-Agent": "AgenticFuzzer/1.0",
@@ -57,7 +50,7 @@ async def scanRequest(db: AsyncSession, req: ScanRequest, redis: ArqRedis):
 
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.get(target_url, timeout=timeout_val, follow_redirects=True, headers=request_headers)
+            response = await client.get(target_url, timeout=45.0, follow_redirects=True, headers=request_headers)
             if response.status_code != 200:
                 raise HTTPException(
                     status_code=400,
@@ -83,10 +76,15 @@ async def scanRequest(db: AsyncSession, req: ScanRequest, redis: ArqRedis):
         requests_per_second=payload.get("requests_per_second", 5)
     )
     db.add(job)
+    await db.flush()
+    try:
+        await redis.enqueue_job('run_fuzzer', job.id, _queue_name="arq:fuzz_queue")
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, details=f"Failed to queue background job: {str(e)}")
     await db.commit()
     await db.refresh(job)
 
-    await redis.enqueue_job('run_fuzzer', job.id)
 
     return job.id
 
@@ -112,6 +110,9 @@ async def generate_report(db: AsyncSession, job_id: int):
     
     if not job:
         return None
+
+    if job.status != JobStatus.COMPLETED:
+        raise ValueError(f"Scan is currently {job.status.value}. Reports are only available upon completion.")
 
     vuln_result = await db.execute(select(FuzzResult).where(FuzzResult.job_id == job_id))
     vulnerabilities = vuln_result.scalars().all()

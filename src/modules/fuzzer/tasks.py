@@ -76,7 +76,6 @@ async def run_fuzzer(ctx: dict, job_id: int):
             async with httpx.AsyncClient(base_url=base_url, headers=job.headers) as target_client:
                 for endpoint in endpoints:
                     
-                    # ---> APPLY GEMINI RATE LIMITING HERE <---
                     await gemini_limiter.wait()
                     print(f"🧠 Generating payloads for {endpoint['method']} {endpoint['path']}...")
                     
@@ -147,6 +146,14 @@ async def run_fuzzer(ctx: dict, job_id: int):
             job.status = JobStatus.COMPLETED
             await db.commit()
             print(f"Job {job.id} completed successfully.")
+            if job.user_email: 
+                await ctx['redis'].enqueue_job(
+                    "send_email_task",
+                    job_id=job.id,
+                    target_email=job.user_email,
+                    _queue_name="arq:email_queue"
+                )
+                print(f"Email task queued for {job.user_email}")
             return True
 
         except Exception as e:

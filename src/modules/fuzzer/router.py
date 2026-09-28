@@ -1,5 +1,5 @@
 
-from fastapi import APIRouter, Depends, HTTPException, Response, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Response, BackgroundTasks, status
 from fastapi.responses import FileResponse
 import os
 from arq.connections import ArqRedis
@@ -11,7 +11,7 @@ from sqlalchemy import select
 from pydantic import EmailStr
 router = APIRouter()
 
-@router.post('/scans', status_code=201)
+@router.post('/scans', status_code=status.HTTP_201_CREATED)
 async def scanRequest(req: ScanRequest, db: AsyncSession = Depends(get_db), redis:ArqRedis = Depends(get_redis_pool)):
     try:
         scan_id = await services.scanRequest(db, req, redis)
@@ -20,9 +20,12 @@ async def scanRequest(req: ScanRequest, db: AsyncSession = Depends(get_db), redi
             "job_id":scan_id,
             "status_url": f"/api/v1/fuzzer/scans/{scan_id}"
         }
-
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=505, detail = str(e))
+        raise HTTPException(status_code=500, detail = str(e))
 
 @router.get('/scans/{job_id}')
 async def getScanStatus(job_id:int, db: AsyncSession= Depends(get_db)):
@@ -45,27 +48,35 @@ async def getScanStatus(job_id:int, db: AsyncSession= Depends(get_db)):
                 for vuln in vulnerabilities
             ]
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=505, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/scans/{job_id}/report", summary="Download Security Audit Report")
 async def download_scan_report(
     job_id: int, 
     db: AsyncSession = Depends(get_db)
 ):
-    report_content = await services.generate_report(db, job_id)
-    
-    if report_content is None:
-        raise HTTPException(status_code=404, detail="Scan job not found.")
+    try:
+        report_content = await services.generate_report(db, job_id)
+        
+        if report_content is None:
+            raise HTTPException(status_code=404, detail="Scan job not found.")
 
-    return Response(
-        content=report_content,
-        media_type="text/markdown",
-        headers={
-            "Content-Disposition": f"attachment; filename=security_report_job_{job_id}.md"
-        }
-    )
-
+        return Response(
+            content=report_content,
+            media_type="text/markdown",
+            headers={
+                "Content-Disposition": f"attachment; filename=security_report_job_{job_id}.md"
+            }
+        )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error generating report.")
 
 @router.post("/scans/{job_id}/email-report", summary="Email Security Audit Report")
 async def email_scan_report(
@@ -92,22 +103,22 @@ async def download_scan_report_pdf(
     Converts the Markdown report to PDF and returns the file for download.
     """
     try:
-        # 1. Call the service layer to handle generation
         temp_pdf_path = await services.generate_pdf_report(db, job_id)
         
         if temp_pdf_path is None:
             raise HTTPException(status_code=404, detail="Scan job not found.")
 
-        # 2. Schedule the temporary file for deletion AFTER it has been sent to the user
         background_tasks.add_task(os.remove, temp_pdf_path)
 
-        # 3. Return the PDF file to the browser
         return FileResponse(
             path=temp_pdf_path,
             media_type="application/pdf",
             filename=f"security_report_job_{job_id}.pdf",
             headers={"Content-Disposition": f"attachment; filename=security_report_job_{job_id}.pdf"}
         )
-
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {str(e)}")

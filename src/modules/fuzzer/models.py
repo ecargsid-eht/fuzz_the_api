@@ -1,8 +1,13 @@
 import enum
 from sqlalchemy import String, Integer, BigInteger, JSON, Text, ForeignKey
-from typing import Optional, Any
-from sqlalchemy.orm import Mapped, mapped_column
+from typing import Optional, Any, TYPE_CHECKING
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.core.database import Base
+
+
+if TYPE_CHECKING:
+    from ..auth.models import User
+
 
 class JobStatus(str, enum.Enum):
     QUEUED = "QUEUED"
@@ -23,6 +28,9 @@ class FuzzJob(Base):
     headers: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
     allowed_methods: Mapped[list[str]] = mapped_column(JSON, default=lambda: ["GET"])
     requests_per_second: Mapped[int] = mapped_column(Integer, default=5)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+
+    owner: Mapped["User"] = relationship(back_populates="jobs")
 
 
 class FuzzResult(Base):

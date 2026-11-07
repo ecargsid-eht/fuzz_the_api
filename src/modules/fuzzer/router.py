@@ -1,20 +1,39 @@
-
 from fastapi import APIRouter, Depends, HTTPException, Response, BackgroundTasks, status
 from fastapi.responses import FileResponse
 import os
 from arq.connections import ArqRedis
+from pydantic import EmailStr
+from typing import List
 from src.core.queue import get_redis_pool
 from src.core.database import AsyncSession, get_db
 from . import services
-from .schemas import ScanRequest
-from sqlalchemy import select
-from pydantic import EmailStr
+from .schemas import ScanRequest, ScanResponse
+from src.modules.auth.models import User
+from src.core.dependencies import get_current_user 
+
 router = APIRouter()
 
-@router.post('/scans', status_code=status.HTTP_201_CREATED)
-async def scanRequest(req: ScanRequest, db: AsyncSession = Depends(get_db), redis:ArqRedis = Depends(get_redis_pool)):
+@router.get('/scans', response_model=List[ScanResponse], status_code=status.HTTP_200_OK)
+async def getScans(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
     try:
-        scan_id = await services.scanRequest(db, req, redis)
+        scans = await services.getScans(db, current_user.id)
+        return scans
+    except HTTPException:
+        raise
+    except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail = str(e))
+    
+@router.post('/scans', status_code=status.HTTP_201_CREATED)
+async def scanRequest(
+    req: ScanRequest, 
+    db: AsyncSession = Depends(get_db), 
+    redis: ArqRedis = Depends(get_redis_pool),
+    current_user: User = Depends(get_current_user) 
+):
+    try:
+        scan_id = await services.scanRequest(db, req, redis, current_user.id)
         return {
             "message":"Scan queued successfully.",
             "job_id":scan_id,
@@ -25,12 +44,17 @@ async def scanRequest(req: ScanRequest, db: AsyncSession = Depends(get_db), redi
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
+        print(str(e))
         raise HTTPException(status_code=500, detail = str(e))
 
 @router.get('/scans/{job_id}')
-async def getScanStatus(job_id:int, db: AsyncSession= Depends(get_db)):
+async def getScanStatus(
+    job_id: int, 
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     try:
-        job, vulnerabilities = await services.scanStatus(db, job_id)
+        job, vulnerabilities = await services.scanStatus(db, job_id, current_user.id)
         return {
             "job_id": job_id,
             "target":job.openapi_url,
@@ -56,10 +80,12 @@ async def getScanStatus(job_id:int, db: AsyncSession= Depends(get_db)):
 @router.get("/scans/{job_id}/report", summary="Download Security Audit Report")
 async def download_scan_report(
     job_id: int, 
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user) 
 ):
     try:
-        report_content = await services.generate_report(db, job_id)
+        # EDITED: Pass current_user.id
+        report_content = await services.generate_report(db, job_id, current_user.id)
         
         if report_content is None:
             raise HTTPException(status_code=404, detail="Scan job not found.")
@@ -83,10 +109,10 @@ async def email_scan_report(
     job_id: int, 
     email: EmailStr,
     db: AsyncSession = Depends(get_db),
-    arq_redis: ArqRedis = Depends(get_redis_pool)
+    arq_redis: ArqRedis = Depends(get_redis_pool),
+    current_user: User = Depends(get_current_user) 
 ):
-    """Enqueues a background task to email the Markdown report to the user."""
-    success = await services.trigger_email_report(db, job_id, email, arq_redis)
+    success = await services.trigger_email_report(db, job_id, email, arq_redis, current_user.id)
     
     if not success:
         raise HTTPException(status_code=404, detail="Scan job not found.")
@@ -97,13 +123,11 @@ async def email_scan_report(
 async def download_scan_report_pdf(
     job_id: int,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    """
-    Converts the Markdown report to PDF and returns the file for download.
-    """
     try:
-        temp_pdf_path = await services.generate_pdf_report(db, job_id)
+        temp_pdf_path = await services.generate_pdf_report(db, job_id, current_user.id)
         
         if temp_pdf_path is None:
             raise HTTPException(status_code=404, detail="Scan job not found.")

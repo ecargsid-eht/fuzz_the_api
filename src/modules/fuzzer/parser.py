@@ -24,12 +24,20 @@ def extract_endpoints(openapi_spec: dict, allowed_methods: list[str]):
 
             if method.lower() not in allowed_methods:
                 continue
+
+            body_schema = {}
+            if "requestBody" in details:
+                content = details["requestBody"].get("content", {})
+                if "application/json" in content:
+                    body_schema = content["application/json"].get("schema", {})
+
             endpoint_info = {
                 "path":path,
                 "method":method.upper(),
                 "summary":details.get("summary",""),
                 "parameters":[],
-                "has_body":"requestBody" in details
+                "has_body":"requestBody" in details,
+                "body_schema": body_schema
             }
 
             if "parameters" in details:

@@ -9,6 +9,18 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     password: str = Field(..., min_length=8, description="Must be at least 8 characters")
 
+class AccessTokenPayload(BaseModel):
+    id: int
+    email: EmailStr
+    role: UserRole
+
+
+class RefreshTokenPayload(BaseModel):
+    id: int
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
 class UserResponse(UserBase):
     id: int
     role: UserRole
@@ -29,3 +41,7 @@ class TokenData(BaseModel):
     id: int | None = None
     email: str | None = None
     role: UserRole | None = None
+
+class OTPVerifyRequest(BaseModel): 
+    email: EmailStr
+    otp: str

@@ -1,19 +1,15 @@
 import os
+import asyncio
 import resend
 from markdown_it import MarkdownIt
 from src.core.config import settings
 
-def send_security_report(target_email: str, job_id: int, target_url: str, report_content: str, pdf_path: str):
-    """
-    Renders the Markdown as a styled HTML email body and attaches the generated PDF.
-    """
+async def send_security_report(target_email: str, job_id: int, target_url: str, report_content: str, pdf_path: str):
     resend.api_key = settings.RESEND_API_KEY
     
-    # 1. Convert Markdown to HTML
     md = MarkdownIt()
     html_content = md.render(report_content)
     
-    # 2. Wrap HTML in a clean CSS template (GitHub-like styling)
     styled_html = f"""
     <html>
     <head>
@@ -37,11 +33,9 @@ def send_security_report(target_email: str, job_id: int, target_url: str, report
     </html>
     """
     
-    # 3. Read the generated PDF into bytes for Resend
     with open(pdf_path, "rb") as f:
         pdf_bytes = list(f.read())
         
-    # 4. Construct the Resend Payload
     params: resend.Emails.SendParams = {
         "from": "Security Fuzzer <onboarding@resend.dev>",
         "to": [target_email],
@@ -54,10 +48,10 @@ def send_security_report(target_email: str, job_id: int, target_url: str, report
             }
         ]
     }
-    
-    # 5. Send the email
+
     try:
-        response = resend.Emails.send(params)
-        print(f"📧 Security report for Job {job_id} successfully sent via Resend. (ID: {response.get('id')})")
+        response = await asyncio.to_thread(resend.Emails.send, params)
+        print(f"Security report for Job {job_id} successfully sent. (ID: {response.get('id')})")
     except Exception as e:
-        print(f"❌ Failed to send email via Resend: {e}")
+        print(f"Failed to send email via Resend: {e}")
+        raise e

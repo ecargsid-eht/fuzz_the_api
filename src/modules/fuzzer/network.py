@@ -1,5 +1,6 @@
 import ipaddress
 import socket
+import asyncio
 from urllib.parse import urlparse
 import httpx
 from fastapi import HTTPException
@@ -33,7 +34,7 @@ def private_or_reserved(ip_str: str) -> bool:
     except ValueError:
         return True
 
-def validate_safe_url(url: str) -> str:
+async def validate_safe_url(url: str) -> str:
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise ValueError("Only http and https protocols are supported.")
@@ -43,7 +44,7 @@ def validate_safe_url(url: str) -> str:
         raise ValueError("Invalid target host.")
 
     try:
-        addr_info = socket.getaddrinfo(hostname, None)
+        addr_info = await asyncio.to_thread(socket.getaddrinfo, hostname, None)
         for entry in addr_info:
             ip_str = entry[4][0]
             if private_or_reserved(ip_str):
@@ -54,8 +55,8 @@ def validate_safe_url(url: str) -> str:
     return url
 
 async def safe_fetch_url(url: str, headers: dict = None, timeout: float = 15.0, max_redirects: int = 3) -> httpx.Response:
-    """Fetches URL while validating each redirect destination against SSRF rules."""
-    current_url = validate_safe_url(url)
+    
+    current_url = await validate_safe_url(url)
     redirects = 0
     
     async with httpx.AsyncClient(headers=headers or {}) as client:
@@ -68,6 +69,8 @@ async def safe_fetch_url(url: str, headers: dict = None, timeout: float = 15.0, 
                 next_url = response.headers.get("location")
                 if not next_url:
                     raise HTTPException(status_code=400, detail="Redirect missing location header.")
-                current_url = validate_safe_url(str(httpx.URL(current_url).join(next_url)))
+                
+                # EDITED: Added 'await'
+                current_url = await validate_safe_url(str(httpx.URL(current_url).join(next_url)))
                 continue
             return response

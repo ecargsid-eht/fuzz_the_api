@@ -1,8 +1,9 @@
 import enum
-from sqlalchemy import String, Integer, BigInteger, JSON, Text, ForeignKey
+from sqlalchemy import String, Integer, BigInteger, JSON, Text, ForeignKey,DateTime, func
 from typing import Optional, Any, TYPE_CHECKING
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.core.database import Base
+from datetime import datetime
 
 
 if TYPE_CHECKING:
@@ -21,7 +22,6 @@ class FuzzJob(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     openapi_url: Mapped[str] = mapped_column(String)
-    user_email: Mapped[str] = mapped_column(String)
     status: Mapped[JobStatus] = mapped_column(default=JobStatus.QUEUED)
 
     target_base_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -31,7 +31,9 @@ class FuzzJob(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
 
     owner: Mapped["User"] = relationship(back_populates="jobs")
-
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Two-way relationship to fetch results/vulnerability counts
+    results: Mapped[list["FuzzResult"]] = relationship(back_populates="job", cascade="all, delete-orphan")
 
 class FuzzResult(Base):
     __tablename__ = "fuzz_results"
@@ -45,5 +47,7 @@ class FuzzResult(Base):
     status_code: Mapped[int] = mapped_column(Integer, nullable=False)
     response_body: Mapped[Optional[str]] = mapped_column(Text,nullable=True)
     is_vulnerable: Mapped[bool] = mapped_column(default=False)
+
+    job: Mapped["FuzzJob"] = relationship(back_populates="results")
 
     

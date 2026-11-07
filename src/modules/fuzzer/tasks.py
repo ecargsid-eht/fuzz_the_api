@@ -4,14 +4,17 @@ import re
 import time
 import httpx
 import os
+import jsonref
 from sqlalchemy import select
-
+from arq import Retry
 from src.core.database import AsyncSessionLocal
 from .generator import generate_attack_payloads
 from .models import FuzzJob, FuzzResult, JobStatus
 from .parser import extract_endpoints, resolve_base_url
 from .email_service import send_security_report
 from .services import generate_report, generate_pdf_report
+from src.modules.auth.models import User 
+
 class GeminiRateLimiter:
     """
     Ensures we do not exceed Gemini's Free Tier limits:
@@ -32,15 +35,9 @@ class GeminiRateLimiter:
         
         self.last_request_time = time.time()
 
-
 gemini_limiter = GeminiRateLimiter(max_rpm=10)
 
-
 def inject_path_params(path: str, params: dict) -> tuple[str, dict]:
-    """
-    Replaces {param} in path with matching keys from params,
-    or falls back to a default mock value.
-    """
     remaining_params = dict(params)
     for key, value in list(remaining_params.items()):
         placeholder = f"{{{key}}}"
@@ -66,26 +63,38 @@ async def run_fuzzer(ctx: dict, job_id: int):
         try:
             async with httpx.AsyncClient(headers=job.headers) as client:
                 response = await client.get(job.openapi_url, timeout=30.0, follow_redirects=True)
-                spec = response.json()
+                response.raise_for_status()
+                spec = jsonref.replace_refs(response.json(), proxies=False)
 
             base_url = resolve_base_url(spec, job.openapi_url, job.target_base_url)
             endpoints = extract_endpoints(spec, job.allowed_methods)
             
             http_throttle_delay = 1.0 / max(job.requests_per_second, 1)
-
+            # leak_signatures = [
+            #     "sqlalchemy",
+            #     "asyncpg",
+            #     "psycopg",
+            #     "traceback (most recent call last)",
+            #     "integrityerror",
+            #     "operationalerror",
+            #     "syntaxerror",
+            #     "'coroutine' object",
+            #     "unhandled exception",
+            # ]
             async with httpx.AsyncClient(base_url=base_url, headers=job.headers) as target_client:
                 for endpoint in endpoints:
                     
                     await gemini_limiter.wait()
-                    print(f"🧠 Generating payloads for {endpoint['method']} {endpoint['path']}...")
+                    print(f"Generating payloads for {endpoint['method']} {endpoint['path']}...")
                     
                     payloads = await generate_attack_payloads(endpoint)
 
                     if not payloads:
                         continue 
+                    seen_requests = set()
 
                     for payload in payloads:
-                        await asyncio.sleep(http_throttle_delay)
+                        
 
                         try:
                             raw_query = payload.get("query_params_json", "{}")
@@ -101,6 +110,16 @@ async def run_fuzzer(ctx: dict, job_id: int):
 
                         resolved_path, filtered_query = inject_path_params(endpoint["path"], query_params)
 
+                        request_signature = (
+                            endpoint['method'], resolved_path, json.dumps(filtered_query, sort_keys=True, default=str),
+                            json.dumps(body_params if endpoint['has_body'] else {}, sort_keys=True, default=str)
+                        )
+
+                        if request_signature in seen_requests:
+                            continue
+                        seen_requests.add(request_signature)
+
+                        await asyncio.sleep(http_throttle_delay)
                         try:
                             attack_response = await target_client.request(
                                 method=endpoint["method"],
@@ -112,10 +131,9 @@ async def run_fuzzer(ctx: dict, job_id: int):
 
                             status = attack_response.status_code
                             test_type = payload.get("test_type", "Unknown")
-                            print(f"📡 [{status}] {endpoint['method']} {resolved_path} -> {test_type}")
+                            print(f"[{status}] {endpoint['method']} {resolved_path} -> {test_type}")
 
                             is_crash = status >= 500
-
                             test_type_lower = test_type.lower()
                             critical_attacks = ["sql", "bola", "broken access", "privilege", "idor", "bypass", "nosql", "xss"]
                             is_critical_attack = any(attack in test_type_lower for attack in critical_attacks)
@@ -146,14 +164,18 @@ async def run_fuzzer(ctx: dict, job_id: int):
             job.status = JobStatus.COMPLETED
             await db.commit()
             print(f"Job {job.id} completed successfully.")
-            if job.user_email: 
+            
+            user_result = await db.execute(select(User).where(User.id == job.user_id))
+            user = user_result.scalar_one_or_none()
+
+            if user and user.email: 
                 await ctx['redis'].enqueue_job(
                     "send_email_task",
                     job_id=job.id,
-                    target_email=job.user_email,
+                    target_email=user.email,
                     _queue_name="arq:email_queue"
                 )
-                print(f"Email task queued for {job.user_email}")
+                print(f"Email task queued for {user.email}")
             return True
 
         except Exception as e:
@@ -164,9 +186,6 @@ async def run_fuzzer(ctx: dict, job_id: int):
 
 
 async def send_email_task(ctx: dict, job_id: int, target_email: str):
-    """
-    ARQ Task: Generates Markdown, converts to PDF, dispatches email, and cleans up.
-    """
     async with AsyncSessionLocal() as db:
         job_result = await db.execute(select(FuzzJob).where(FuzzJob.id == job_id))
         job = job_result.scalar_one_or_none()
@@ -182,13 +201,16 @@ async def send_email_task(ctx: dict, job_id: int, target_email: str):
         temp_pdf_path = await generate_pdf_report(db, job_id)
 
         try:
-            send_security_report(
+            await send_security_report(
                 target_email=target_email,
                 job_id=job.id,
                 target_url=job.openapi_url,
                 report_content=report_content,
                 pdf_path=temp_pdf_path
             )
+        except Exception as e:
+            print(f"Report dispatch failed: {e}")
+            raise Retry(defer=ctx.get('job_try', 1) * 15)
         finally:
             if temp_pdf_path and os.path.exists(temp_pdf_path):
                 os.remove(temp_pdf_path)

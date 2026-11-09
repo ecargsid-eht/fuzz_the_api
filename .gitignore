@@ -1,3 +1,4 @@
 migrations/
 .env.development
 alembic.ini
+.env*

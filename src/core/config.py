@@ -2,7 +2,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    PROJECT_NAME:str = "Fuzz API"
+    PROJECT_NAME:str = "Fuzz The API"
     GEMINI_API_KEY:str
     REDIS_URL:str = "redis://localhost:6379"
     DATABASE_URL:str

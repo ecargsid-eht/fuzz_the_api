@@ -6,7 +6,6 @@ class Settings(BaseSettings):
     GEMINI_API_KEY:str
     REDIS_URL:str = "redis://localhost:6379"
     DATABASE_URL:str
-    RESEND_API_KEY:str
     JWT_SECRET: str
     ACCESS_TOKEN_EXPIRE_MINUTES: int
     # Email related settings to be added later on...

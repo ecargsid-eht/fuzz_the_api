@@ -48,13 +48,15 @@ async def register_user(
 
     except HTTPException:
         raise
-    except SQLAlchemyError:
+    except SQLAlchemyError as e:
+        print(e)
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Database transaction failed during registration."
         )
     except Exception as e:
+        print(e)
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

@@ -119,7 +119,7 @@ Rules:
         raw_text = ""
         try:
             response = await client.aio.models.generate_content(
-                model="gemini-2.5-flash-lite",
+                model="gemini-3.5-flash-lite",
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
@@ -128,7 +128,9 @@ Rules:
                     temperature=0.2,
                     max_output_tokens=4096,
                     # CRITICAL: Disable thinking so thinking tokens don't truncate the JSON output
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    thinking_config=types.ThinkingConfig(
+                        thinking_level=types.ThinkingLevel.MINIMAL
+                    ),
                 ),
             )
 

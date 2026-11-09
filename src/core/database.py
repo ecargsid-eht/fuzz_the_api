@@ -7,7 +7,7 @@ DATABASE_URL = settings.DATABASE_URL
 logger = logging.getLogger('backend')
 
 try:
-    engine = create_async_engine(DATABASE_URL, echo=True, pool_size=20, max_overflow=20, pool_pre_ping=True)
+    engine = create_async_engine(DATABASE_URL, connect_args={"ssl":True}, echo=True, pool_size=20, max_overflow=20, pool_pre_ping=True)
 except Exception as e:
     logger.error(f'Database engine creation failed with DATABASE URL: {DATABASE_URL}. Error:\n {e}')
     raise e

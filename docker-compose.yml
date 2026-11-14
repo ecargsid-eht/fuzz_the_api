@@ -2,8 +2,10 @@ services:
   api:
     build: .
     command: fastapi run main.py --port 8000
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
+    # ports:
+    #   - "8000:8000" # Uncomment for local debugging without Nginx
     env_file:
       - .env.docker
     depends_on:
@@ -30,10 +32,33 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    # ports:
+    #   - "6379:6379" # Uncomment if external access to Redis is required
     volumes:
       - redis_data:/data
 
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d
+      - certbot-certs:/etc/letsencrypt
+      - certbot-webroot:/var/www/certbot
+    depends_on:
+      - api
+
+  certbot:
+    image: certbot/certbot
+    restart: unless-stopped
+    volumes:
+      - certbot-certs:/etc/letsencrypt
+      - certbot-webroot:/var/www/certbot
+    # Keeps the container alive and checks for renewal every 12 hours
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+
 volumes:
   redis_data:
+  certbot-certs:
+  certbot-webroot:
